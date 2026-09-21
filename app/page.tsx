@@ -16,6 +16,7 @@ import {
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState("ta-IN");
   
   // Recording States
   const [isRecording, setIsRecording] = useState(false);
@@ -30,6 +31,7 @@ export default function Home() {
   const [detectedLanguage, setDetectedLanguage] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [batchStatus, setBatchStatus] = useState("");
 
   // --- File Upload Logic ---
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -37,9 +39,9 @@ export default function Home() {
     setTranscript("");
     if (acceptedFiles && acceptedFiles.length > 0) {
       const selected = acceptedFiles[0];
-      // File size validation: REST API limit is ~30 seconds. We'll set a soft limit of 10MB.
-      if (selected.size > 10 * 1024 * 1024) {
-        setError("File is too large. Please keep audio under 30 seconds / 10MB.");
+      // File size validation: Batch API can handle up to 2 hours. Let's set a soft limit of 100MB.
+      if (selected.size > 100 * 1024 * 1024) {
+        setError("File is too large. Please keep audio under 2 hours / 100MB.");
         return;
       }
       setFile(selected);
@@ -126,29 +128,137 @@ export default function Home() {
     setError("");
     setTranscript("");
     setDetectedLanguage("");
+    setBatchStatus("");
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
+      // Determine if we should use Batch API by checking audio duration
+      const getAudioDuration = (audioFile: File): Promise<number> => {
+        return new Promise((resolve) => {
+          const objectUrl = URL.createObjectURL(audioFile);
+          const audio = new Audio(objectUrl);
+          audio.addEventListener("loadedmetadata", () => {
+            URL.revokeObjectURL(objectUrl);
+            resolve(audio.duration);
+          });
+          audio.addEventListener("error", () => {
+            URL.revokeObjectURL(objectUrl);
+            // Fallback to size-based check if duration can't be read (approx > 500KB usually > 30s)
+            resolve(audioFile.size > 500 * 1024 ? 31 : 0);
+          });
+        });
+      };
 
-      const response = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
+      const duration = await getAudioDuration(file);
+      const isBatch = duration > 30 || file.size > 1 * 1024 * 1024; // >30s or >1MB
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to transcribe audio.");
+      if (isBatch) {
+        await handleBatchTranscribe();
+      } else {
+        await handleRestTranscribe();
       }
-
-      setTranscript(data.transcript);
-      setDetectedLanguage(data.language_code);
-    } catch (err: any) {
+    } /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    catch (err: any) {
       console.error(err);
       setError(err.message || "An unexpected error occurred during transcription.");
     } finally {
       setIsTranscribing(false);
+      setBatchStatus("");
+    }
+  };
+
+  const handleRestTranscribe = async () => {
+    const formData = new FormData();
+    formData.append("file", file!);
+    formData.append("languageCode", selectedLanguage);
+
+    const response = await fetch("/api/transcribe", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to transcribe audio.");
+    }
+
+    setTranscript(data.transcript);
+    setDetectedLanguage(data.language_code);
+  };
+
+  const handleBatchTranscribe = async () => {
+    setBatchStatus("Initializing batch job...");
+    
+    // 1. Init
+    const initRes = await fetch("/api/batch/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file!.name, languageCode: selectedLanguage })
+    });
+    const initData = await initRes.json();
+    if (!initRes.ok) throw new Error(initData.error || "Init failed");
+    const { jobId, uploadUrl } = initData;
+
+    setBatchStatus("Uploading audio file...");
+
+    // 2. Upload (proxy through backend to avoid CORS)
+    const uploadRes = await fetch("/api/batch/upload", {
+      method: "PUT",
+      headers: {
+        "Content-Type": file!.type || "application/octet-stream",
+        "x-upload-url": uploadUrl
+      },
+      body: file,
+    });
+    if (!uploadRes.ok) throw new Error("Failed to upload audio to storage");
+
+    setBatchStatus("Starting processing...");
+
+    // 3. Start
+    const startRes = await fetch("/api/batch/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId })
+    });
+    if (!startRes.ok) throw new Error("Failed to start job");
+
+    // 4. Poll
+    while (true) {
+      setBatchStatus(`Processing (Polling status)...`);
+      await new Promise((r) => setTimeout(r, 5000));
+      const statusRes = await fetch(`/api/batch/status?jobId=${jobId}`);
+      if (!statusRes.ok) throw new Error("Failed to get status");
+      
+      const statusData = await statusRes.json();
+      const currentStatus = statusData.job_state || statusData.status; // Fallback just in case
+      setBatchStatus(`Status: ${currentStatus}`);
+      
+      if (currentStatus === "Completed" || currentStatus === "COMPLETED") {
+        break;
+      } else if (currentStatus === "Failed" || currentStatus === "FAILED") {
+        throw new Error("Batch job failed on Sarvam AI");
+      }
+    }
+
+    setBatchStatus("Downloading result...");
+
+    // 5. Result
+    const resultRes = await fetch(`/api/batch/result?jobId=${jobId}`);
+    const resultData = await resultRes.json();
+    if (!resultRes.ok) throw new Error(resultData.error || "Failed to fetch result");
+
+    // Check result formats based on possible Sarvam outputs
+    if (resultData.transcript) {
+      setTranscript(resultData.transcript);
+    } else if (resultData.text) {
+      setTranscript(resultData.text);
+    } else if (resultData.segments && Array.isArray(resultData.segments)) {
+      // Sometimes it returns segments
+      const text = resultData.segments.map((/* eslint-disable-next-line @typescript-eslint/no-explicit-any */ s: any) => s.text || s.transcript).join(' ');
+      setTranscript(text);
+    } else {
+      // Fallback
+      setTranscript(JSON.stringify(resultData, null, 2));
     }
   };
 
@@ -261,6 +371,32 @@ export default function Home() {
           </div>
         )}
 
+        {/* Language Selection */}
+        <div className="mb-8 flex flex-col items-center">
+          <label htmlFor="language-select" className="text-sm font-medium text-slate-700 mb-2">
+            Select Language
+          </label>
+          <select
+            id="language-select"
+            value={selectedLanguage}
+            onChange={(e) => setSelectedLanguage(e.target.value)}
+            disabled={isTranscribing || isRecording}
+            className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ngo-primary focus:border-ngo-primary"
+          >
+            <option value="ta-IN">Tamil</option>
+            <option value="en-IN">English</option>
+            <option value="hi-IN">Hindi</option>
+            <option value="te-IN">Telugu</option>
+            <option value="ml-IN">Malayalam</option>
+            <option value="kn-IN">Kannada</option>
+            <option value="mr-IN">Marathi</option>
+            <option value="bn-IN">Bengali</option>
+            <option value="gu-IN">Gujarati</option>
+            <option value="pa-IN">Punjabi</option>
+            <option value="od-IN">Odia</option>
+          </select>
+        </div>
+
         {/* Transcribe Button */}
         <button
           onClick={handleTranscribe}
@@ -274,7 +410,7 @@ export default function Home() {
           {isTranscribing ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
-              Transcribing... this may take a moment
+              {batchStatus ? batchStatus : "Transcribing... this may take a moment"}
             </>
           ) : (
             "Transcribe Audio"

@@ -19,11 +19,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const languageCode = formData.get("languageCode") as string | null;
+
     // Create a new FormData object matching the Sarvam AI specifications
     const sarvamFormData = new FormData();
     sarvamFormData.append("file", file);
     sarvamFormData.append("model", "saaras:v3");
     sarvamFormData.append("mode", "transcribe");
+    if (languageCode) {
+      sarvamFormData.append("language_code", languageCode);
+    }
 
     const response = await fetch("https://api.sarvam.ai/speech-to-text", {
       method: "POST",
@@ -44,7 +49,8 @@ export async function POST(request: NextRequest) {
 
     const data = await response.json();
     return NextResponse.json(data);
-  } catch (error: any) {
+  } /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  catch (error: any) {
     console.error("Sarvam API Exception:", error.message || error);
     
     return NextResponse.json(
