@@ -2,22 +2,22 @@
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import { 
-  UploadCloud, 
-  Mic, 
-  Square, 
-  Loader2, 
-  FileAudio, 
-  CheckCircle2, 
-  AlertCircle, 
-  Copy, 
-  Download 
+import {
+  UploadCloud,
+  Mic,
+  Square,
+  Loader2,
+  FileAudio,
+  CheckCircle2,
+  AlertCircle,
+  Copy,
+  Download
 } from "lucide-react";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState("ta-IN");
-  
+
   // Recording States
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -33,10 +33,19 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
   const [batchStatus, setBatchStatus] = useState("");
 
+  // Translation States
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translatedText, setTranslatedText] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState("en-IN");
+  const [translationError, setTranslationError] = useState("");
+  const [copiedTranslation, setCopiedTranslation] = useState(false);
+
   // --- File Upload Logic ---
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setError("");
     setTranscript("");
+    setTranslatedText("");
+    setTranslationError("");
     if (acceptedFiles && acceptedFiles.length > 0) {
       const selected = acceptedFiles[0];
       // File size validation: Batch API can handle up to 2 hours. Let's set a soft limit of 100MB.
@@ -61,6 +70,8 @@ export default function Home() {
     try {
       setError("");
       setTranscript("");
+      setTranslatedText("");
+      setTranslationError("");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -76,14 +87,14 @@ export default function Home() {
         const audioBlob = new Blob(chunksRef.current, { type: "audio/wav" });
         const audioFile = new File([audioBlob], "recorded_audio.wav", { type: "audio/wav" });
         setFile(audioFile);
-        
+
         // Stop all tracks to release microphone
         stream.getTracks().forEach((track) => track.stop());
       };
 
       mediaRecorder.start();
       setIsRecording(true);
-      
+
       // Stop recording automatically after 30 seconds
       setRecordingTime(30);
       timerRef.current = setInterval(() => {
@@ -129,6 +140,8 @@ export default function Home() {
     setTranscript("");
     setDetectedLanguage("");
     setBatchStatus("");
+    setTranslatedText("");
+    setTranslationError("");
 
     try {
       // Determine if we should use Batch API by checking audio duration
@@ -188,7 +201,7 @@ export default function Home() {
 
   const handleBatchTranscribe = async () => {
     setBatchStatus("Initializing batch job...");
-    
+
     // 1. Init
     const initRes = await fetch("/api/batch/init", {
       method: "POST",
@@ -228,11 +241,11 @@ export default function Home() {
       await new Promise((r) => setTimeout(r, 5000));
       const statusRes = await fetch(`/api/batch/status?jobId=${jobId}`);
       if (!statusRes.ok) throw new Error("Failed to get status");
-      
+
       const statusData = await statusRes.json();
       const currentStatus = statusData.job_state || statusData.status; // Fallback just in case
       setBatchStatus(`Status: ${currentStatus}`);
-      
+
       if (currentStatus === "Completed" || currentStatus === "COMPLETED") {
         break;
       } else if (currentStatus === "Failed" || currentStatus === "FAILED") {
@@ -281,20 +294,74 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const handleTranslate = async () => {
+    if (!transcript) return;
+    setIsTranslating(true);
+    setTranslationError("");
+    setTranslatedText("");
+
+    try {
+      // Use detectedLanguage from REST or fallback to selectedLanguage
+      const sourceLang = detectedLanguage || selectedLanguage;
+
+      const response = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: transcript,
+          sourceLanguageCode: sourceLang,
+          targetLanguageCode: targetLanguage,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to translate text.");
+      }
+
+      setTranslatedText(data.translated_text);
+    } /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    catch (err: any) {
+      console.error(err);
+      setTranslationError(err.message || "An unexpected error occurred during translation.");
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const handleCopyTranslation = () => {
+    navigator.clipboard.writeText(translatedText);
+    setCopiedTranslation(true);
+    setTimeout(() => setCopiedTranslation(false), 2000);
+  };
+
+  const handleDownloadTranslation = () => {
+    const blob = new Blob([translatedText], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `translation_${targetLanguage}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <main className="min-h-screen p-8 max-w-3xl mx-auto flex flex-col items-center">
-      
+
       {/* Header & Mission */}
       <header className="w-full text-center mb-10 mt-8">
-        <h1 className="text-4xl font-bold text-ngo-primary mb-3">Speak India</h1>
+        <h1 className="text-4xl font-bold text-ngo-primary mb-3">Silicon setu</h1>
         <p className="text-lg text-slate-600 max-w-xl mx-auto">
-          Empowering communities by breaking language barriers. Our mission is to make voices heard across India by transcribing local languages to text instantly.
+          Transcript audio below
         </p>
       </header>
 
       {/* Main Interaction Area */}
       <section className="w-full bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
-        
+
         {/* Error Display */}
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-start gap-3 text-red-600">
@@ -305,8 +372,8 @@ export default function Home() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           {/* Drag & Drop Zone */}
-          <div 
-            {...getRootProps()} 
+          <div
+            {...getRootProps()}
             className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-colors
               ${isDragActive ? "border-ngo-primary bg-blue-50" : "border-slate-300 hover:bg-slate-50"}
             `}
@@ -321,21 +388,21 @@ export default function Home() {
           {/* Record Audio Zone */}
           <div className="border border-slate-200 rounded-xl p-8 flex flex-col items-center justify-center text-center bg-slate-50">
             {!isRecording ? (
-              <button 
+              <button
                 onClick={startRecording}
                 className="w-16 h-16 bg-red-100 hover:bg-red-200 text-red-600 rounded-full flex items-center justify-center transition-colors mb-3"
               >
                 <Mic className="w-7 h-7" />
               </button>
             ) : (
-              <button 
+              <button
                 onClick={stopRecording}
                 className="w-16 h-16 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center transition-colors mb-3 animate-pulse"
               >
                 <Square className="w-6 h-6" fill="currentColor" />
               </button>
             )}
-            
+
             <p className="text-sm font-medium text-slate-700">
               {isRecording ? "Recording..." : "Record Audio"}
             </p>
@@ -362,7 +429,7 @@ export default function Home() {
                 <p className="text-xs text-slate-500">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
               </div>
             </div>
-            <button 
+            <button
               onClick={() => setFile(null)}
               className="text-xs font-medium text-slate-500 hover:text-slate-700 underline"
             >
@@ -402,8 +469,8 @@ export default function Home() {
           onClick={handleTranscribe}
           disabled={!file || isTranscribing || isRecording}
           className={`w-full py-3.5 rounded-xl font-semibold text-white flex items-center justify-center gap-2 transition-all
-            ${(!file || isTranscribing || isRecording) 
-              ? "bg-slate-300 cursor-not-allowed" 
+            ${(!file || isTranscribing || isRecording)
+              ? "bg-slate-300 cursor-not-allowed"
               : "bg-ngo-primary hover:bg-blue-900 shadow-md hover:shadow-lg"}
           `}
         >
@@ -432,7 +499,7 @@ export default function Home() {
               )}
             </div>
             <div className="flex gap-2">
-              <button 
+              <button
                 onClick={handleCopy}
                 className="p-2 text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
                 title="Copy to clipboard"
@@ -440,7 +507,7 @@ export default function Home() {
                 {copied ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                 <span className="hidden sm:inline">{copied ? "Copied!" : "Copy"}</span>
               </button>
-              <button 
+              <button
                 onClick={handleDownload}
                 className="p-2 text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
                 title="Download as .txt"
@@ -450,11 +517,86 @@ export default function Home() {
               </button>
             </div>
           </div>
-          
+
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 min-h-[120px]">
             <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">
               {transcript}
             </p>
+          </div>
+
+          {/* Translation Section */}
+          <div className="mt-6 border-t border-slate-200 pt-6">
+            <h3 className="text-md font-semibold text-slate-800 mb-3">Translate Transcript</h3>
+
+            {translationError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg flex items-start gap-2 text-red-600">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <p className="text-sm font-medium">{translationError}</p>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-4 mb-4">
+              <select
+                value={targetLanguage}
+                onChange={(e) => setTargetLanguage(e.target.value)}
+                disabled={isTranslating}
+                className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ngo-primary focus:border-ngo-primary flex-1"
+              >
+                <option value="en-IN">English</option>
+                <option value="hi-IN">Hindi</option>
+                <option value="ta-IN">Tamil</option>
+                <option value="te-IN">Telugu</option>
+                <option value="ml-IN">Malayalam</option>
+                <option value="kn-IN">Kannada</option>
+                <option value="mr-IN">Marathi</option>
+                <option value="bn-IN">Bengali</option>
+                <option value="gu-IN">Gujarati</option>
+                <option value="pa-IN">Punjabi</option>
+                <option value="od-IN">Odia</option>
+              </select>
+              <button
+                onClick={handleTranslate}
+                disabled={isTranslating || !transcript}
+                className={`px-6 py-2 rounded-lg font-semibold text-white flex items-center justify-center gap-2 transition-all
+                  ${(isTranslating || !transcript)
+                    ? "bg-slate-300 cursor-not-allowed"
+                    : "bg-ngo-primary hover:bg-blue-900 shadow-sm hover:shadow"}
+                `}
+              >
+                {isTranslating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Translating...
+                  </>
+                ) : (
+                  "Translate"
+                )}
+              </button>
+            </div>
+
+            {translatedText && (
+              <div className="mt-4 bg-blue-50/50 border border-blue-100 rounded-xl p-5 relative group animate-in fade-in slide-in-from-top-2">
+                <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                  <button
+                    onClick={handleCopyTranslation}
+                    className="p-1.5 bg-white text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-md shadow-sm border border-slate-200 transition-colors"
+                    title="Copy translation"
+                  >
+                    {copiedTranslation ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                  <button
+                    onClick={handleDownloadTranslation}
+                    className="p-1.5 bg-white text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-md shadow-sm border border-slate-200 transition-colors"
+                    title="Download translation"
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="text-slate-800 leading-relaxed whitespace-pre-wrap">
+                  {translatedText}
+                </p>
+              </div>
+            )}
           </div>
         </section>
       )}
