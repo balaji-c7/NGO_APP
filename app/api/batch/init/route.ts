@@ -41,9 +41,9 @@ export async function POST(req: NextRequest) {
 
     const uploadUrl = uploadLinksResponse.upload_urls?.[filename]?.file_url;
 
-    if (!uploadUrl) {
-      throw new Error('Failed to generate upload URL');
-    }
+    // if (!uploadUrl) {
+    //   throw new Error('Failed to generate upload URL');
+    // }
 
     return NextResponse.json({
       jobId,
