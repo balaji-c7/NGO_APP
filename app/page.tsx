@@ -11,10 +11,31 @@ import {
   CheckCircle2,
   AlertCircle,
   Copy,
-  Download
+  Download,
+  Volume2
 } from "lucide-react";
 
 export default function Home() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parseApiError = (err: any, fallback: string) => {
+    let errorMsg = err?.message || fallback;
+    if (typeof errorMsg === 'string' && errorMsg.includes("Body: ")) {
+      try {
+        const bodyJson = JSON.parse(errorMsg.split("Body: ")[1]);
+        if (bodyJson?.error?.message) {
+          errorMsg = bodyJson.error.message;
+        }
+      } catch (e) {
+        // Ignore JSON parse errors
+      }
+    }
+    // Specific custom message for identical language selection
+    if (typeof errorMsg === 'string' && errorMsg.includes("Source and target languages must be different")) {
+      errorMsg = "Source and target languages cannot be the same.";
+    }
+    return errorMsg;
+  };
+
   const [file, setFile] = useState<File | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState("ta-IN");
 
@@ -40,12 +61,19 @@ export default function Home() {
   const [translationError, setTranslationError] = useState("");
   const [copiedTranslation, setCopiedTranslation] = useState(false);
 
+  // TTS States
+  const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+  const [audioUrl, setAudioUrl] = useState("");
+  const [audioError, setAudioError] = useState("");
+
   // --- File Upload Logic ---
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setError("");
     setTranscript("");
     setTranslatedText("");
     setTranslationError("");
+    setAudioUrl("");
+    setAudioError("");
     if (acceptedFiles && acceptedFiles.length > 0) {
       const selected = acceptedFiles[0];
       // File size validation: Batch API can handle up to 2 hours. Let's set a soft limit of 100MB.
@@ -72,6 +100,8 @@ export default function Home() {
       setTranscript("");
       setTranslatedText("");
       setTranslationError("");
+      setAudioUrl("");
+      setAudioError("");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -142,6 +172,8 @@ export default function Home() {
     setBatchStatus("");
     setTranslatedText("");
     setTranslationError("");
+    setAudioUrl("");
+    setAudioError("");
 
     try {
       // Determine if we should use Batch API by checking audio duration
@@ -172,7 +204,7 @@ export default function Home() {
     } /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
     catch (err: any) {
       console.error(err);
-      setError(err.message || "An unexpected error occurred during transcription.");
+      setError(parseApiError(err, "An unexpected error occurred during transcription."));
     } finally {
       setIsTranscribing(false);
       setBatchStatus("");
@@ -266,8 +298,8 @@ export default function Home() {
     } else if (resultData.text) {
       setTranscript(resultData.text);
     } else if (resultData.segments && Array.isArray(resultData.segments)) {
-      // Sometimes it returns segments
-      const text = resultData.segments.map((/* eslint-disable-next-line @typescript-eslint/no-explicit-any */ s: any) => s.text || s.transcript).join(' ');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const text = resultData.segments.map((s: any) => s.text || s.transcript).join(' ');
       setTranscript(text);
     } else {
       // Fallback
@@ -299,6 +331,8 @@ export default function Home() {
     setIsTranslating(true);
     setTranslationError("");
     setTranslatedText("");
+    setAudioUrl("");
+    setAudioError("");
 
     try {
       // Use detectedLanguage from REST or fallback to selectedLanguage
@@ -324,7 +358,7 @@ export default function Home() {
     } /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
     catch (err: any) {
       console.error(err);
-      setTranslationError(err.message || "An unexpected error occurred during translation.");
+      setTranslationError(parseApiError(err, "An unexpected error occurred during translation."));
     } finally {
       setIsTranslating(false);
     }
@@ -348,19 +382,58 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const handleGenerateAudio = async () => {
+    if (!translatedText) return;
+    setIsGeneratingAudio(true);
+    setAudioError("");
+    setAudioUrl("");
+
+    try {
+      const response = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: translatedText,
+          targetLanguageCode: targetLanguage,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate audio.");
+      }
+
+      if (data.audios && data.audios.length > 0) {
+        const base64Audio = data.audios[0];
+        const audioSrc = `data:audio/wav;base64,${base64Audio}`;
+        setAudioUrl(audioSrc);
+      } else {
+        throw new Error("No audio returned from API.");
+      }
+    } /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    catch (err: any) {
+      console.error(err);
+      setAudioError(parseApiError(err, "An unexpected error occurred during audio generation."));
+    } finally {
+      setIsGeneratingAudio(false);
+    }
+  };
+
   return (
-    <main className="min-h-screen p-8 max-w-3xl mx-auto flex flex-col items-center">
+    <main className="h-screen w-full overflow-hidden bg-slate-50 flex flex-col items-center p-6">
 
       {/* Header & Mission */}
-      <header className="w-full text-center mb-10 mt-8">
-        <h1 className="text-4xl font-bold text-ngo-primary mb-3">Silicon setu</h1>
-        <p className="text-lg text-slate-600 max-w-xl mx-auto">
-          Transcript audio below
+      <header className="w-full shrink-0 text-center mb-6 mt-2">
+        <h1 className="text-4xl font-bold text-ngo-primary mb-2">Silicon Setu</h1>
+        <p className="text-base text-slate-600 max-w-xl mx-auto">
+          Speech-to-Speech Translation Platform
         </p>
       </header>
 
-      {/* Main Interaction Area */}
-      <section className="w-full bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+      <div className="w-full max-w-[1500px] flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch pb-2">
+        {/* Main Interaction Area */}
+      <section className="w-full bg-white rounded-2xl shadow-sm border border-slate-200 p-6 h-full flex flex-col overflow-y-auto">
 
         {/* Error Display */}
         {error && (
@@ -487,46 +560,60 @@ export default function Home() {
       </section>
 
       {/* Result Section */}
-      {transcript && (
-        <section className="w-full mt-8 bg-white rounded-2xl shadow-sm border border-slate-200 p-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold text-slate-800">Transcription Result</h2>
-              {detectedLanguage && (
-                <span className="px-2.5 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full uppercase">
-                  {detectedLanguage}
-                </span>
-              )}
+      <section className="w-full bg-white rounded-2xl shadow-sm border border-slate-200 p-6 h-full flex flex-col overflow-y-auto">
+        {!transcript ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-slate-400 opacity-60 min-h-[300px]">
+            <Mic className="w-16 h-16 mb-4" />
+            <p className="text-lg font-medium text-center">Record or upload audio<br/>to see transcription here</p>
+          </div>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex flex-col h-full">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-slate-800">Transcription Result</h2>
+                {detectedLanguage && (
+                  <span className="px-2.5 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full uppercase">
+                    {detectedLanguage}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleCopy}
+                  className="p-2 text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
+                  title="Copy to clipboard"
+                >
+                  {copied ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+                </button>
+                <button
+                  onClick={handleDownload}
+                  className="p-2 text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
+                  title="Download as .txt"
+                >
+                  <Download className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleCopy}
-                className="p-2 text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
-                title="Copy to clipboard"
-              >
-                {copied ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
-                <span className="hidden sm:inline">{copied ? "Copied!" : "Copy"}</span>
-              </button>
-              <button
-                onClick={handleDownload}
-                className="p-2 text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
-                title="Download as .txt"
-              >
-                <Download className="w-4 h-4" />
-                <span className="hidden sm:inline">Download</span>
-              </button>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 flex-1 min-h-0 overflow-y-auto">
+              <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">
+                {transcript}
+              </p>
             </div>
           </div>
+        )}
+      </section>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 min-h-[120px]">
-            <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">
-              {transcript}
-            </p>
+      {/* Translation Section */}
+      <section className="w-full bg-white rounded-2xl shadow-sm border border-slate-200 p-6 h-full flex flex-col overflow-y-auto">
+        {!transcript ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-slate-400 opacity-60 min-h-[300px]">
+            <Volume2 className="w-16 h-16 mb-4" />
+            <p className="text-lg font-medium text-center">Translation will<br/>appear here</p>
           </div>
-
-          {/* Translation Section */}
-          <div className="mt-6 border-t border-slate-200 pt-6">
-            <h3 className="text-md font-semibold text-slate-800 mb-3">Translate Transcript</h3>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex flex-col h-full">
+            <h3 className="text-lg font-semibold text-slate-800 mb-4">Translate Transcript</h3>
 
             {translationError && (
               <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg flex items-start gap-2 text-red-600">
@@ -535,7 +622,7 @@ export default function Home() {
               </div>
             )}
 
-            <div className="flex flex-col sm:flex-row gap-4 mb-4">
+            <div className="flex flex-col xl:flex-row gap-4 mb-4">
               <select
                 value={targetLanguage}
                 onChange={(e) => setTargetLanguage(e.target.value)}
@@ -566,7 +653,6 @@ export default function Home() {
                 {isTranslating ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Translating...
                   </>
                 ) : (
                   "Translate"
@@ -575,8 +661,16 @@ export default function Home() {
             </div>
 
             {translatedText && (
-              <div className="mt-4 bg-blue-50/50 border border-blue-100 rounded-xl p-5 relative group animate-in fade-in slide-in-from-top-2">
+              <div className="mt-4 bg-blue-50/50 border border-blue-100 rounded-xl p-5 relative group animate-in fade-in slide-in-from-top-2 flex-1 min-h-0 overflow-y-auto">
                 <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                  <button
+                    onClick={handleGenerateAudio}
+                    disabled={isGeneratingAudio}
+                    className="p-1.5 bg-white text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-md shadow-sm border border-slate-200 transition-colors"
+                    title="Generate Audio"
+                  >
+                    {isGeneratingAudio ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
+                  </button>
                   <button
                     onClick={handleCopyTranslation}
                     className="p-1.5 bg-white text-slate-500 hover:text-ngo-primary hover:bg-blue-50 rounded-md shadow-sm border border-slate-200 transition-colors"
@@ -597,9 +691,26 @@ export default function Home() {
                 </p>
               </div>
             )}
+
+            {audioError && (
+              <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-lg flex items-start gap-2 text-red-600">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <p className="text-sm font-medium">{audioError}</p>
+              </div>
+            )}
+
+            {audioUrl && (
+              <div className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded-xl animate-in fade-in slide-in-from-top-2">
+                <p className="text-sm font-semibold text-slate-800 mb-2">Generated Audio</p>
+                <audio controls className="w-full" src={audioUrl}>
+                  Your browser does not support the audio element.
+                </audio>
+              </div>
+            )}
           </div>
-        </section>
-      )}
+        )}
+      </section>
+      </div>
 
     </main>
   );
